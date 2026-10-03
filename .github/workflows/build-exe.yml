@@ -44,6 +44,17 @@ jobs:
           # Project is zero-dependency; install it so PyInstaller can resolve the package.
           pip install .
 
+      - name: Create entry point
+        shell: bash
+        run: |
+          # Wrapper that imports the package properly (avoids relative-import errors
+          # that occur when PyInstaller is pointed at a package submodule directly).
+          echo "from agenttrace.cli import main" > _entry.py
+          echo "import sys" >> _entry.py
+          echo "if __name__ == '__main__':" >> _entry.py
+          echo "    sys.exit(main())" >> _entry.py
+          cat _entry.py
+
       - name: Build standalone EXE
         run: >
           pyinstaller
@@ -51,7 +62,7 @@ jobs:
           --console
           --name agenttrace
           --collect-submodules agenttrace
-          agenttrace/cli.py
+          _entry.py
 
       - name: Smoke test the EXE
         run: |
