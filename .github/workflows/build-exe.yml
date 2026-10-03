@@ -1,0 +1,74 @@
+name: Build Windows EXE
+
+# Builds a standalone AgentTrace Windows executable with PyInstaller and
+# publishes it as a build artifact. When triggered by a version tag (v*),
+# it also attaches the .exe to the GitHub Release.
+#
+# Triggers:
+#   - manual (workflow_dispatch) — build on demand
+#   - version tags v* — build + attach to the release
+#   - pushes to main that touch code — smoke-build to catch breakage early
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+    paths:
+      - "agenttrace/**"
+      - "pyproject.toml"
+      - ".github/workflows/build-exe.yml"
+
+permissions:
+  contents: write   # needed to upload assets to a Release
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          # Project is zero-dependency; install it so PyInstaller can resolve the package.
+          pip install .
+
+      - name: Build standalone EXE
+        run: >
+          pyinstaller
+          --onefile
+          --console
+          --name agenttrace
+          --collect-submodules agenttrace
+          agenttrace/cli.py
+
+      - name: Smoke test the EXE
+        run: |
+          .\dist\agenttrace.exe --version
+          .\dist\agenttrace.exe --help
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agenttrace-windows-exe
+          path: dist/agenttrace.exe
+          if-no-files-found: error
+
+      - name: Attach EXE to Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/agenttrace.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
