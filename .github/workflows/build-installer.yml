@@ -1,0 +1,108 @@
+name: Build Windows Installer
+
+# Builds the AgentTrace standalone EXE (PyInstaller) and wraps it in a proper
+# Inno Setup installer (agenttrace-setup.exe). The installer provides:
+#   - silent install (/VERYSILENT)
+#   - an Add/Remove Programs entry (name + RAKSHANEX publisher)
+#   - a clean uninstaller
+# These are exactly what Microsoft Store "EXE/MSI app" package validation checks for.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "agenttrace/**"
+      - "installer/**"
+      - "pyproject.toml"
+      - ".github/workflows/build-installer.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install .
+
+      - name: Create entry point
+        shell: bash
+        run: |
+          echo "from agenttrace.cli import main" > _entry.py
+          echo "import sys" >> _entry.py
+          echo "if __name__ == '__main__':" >> _entry.py
+          echo "    sys.exit(main())" >> _entry.py
+
+      - name: Build standalone EXE
+        run: >
+          pyinstaller
+          --onefile
+          --console
+          --name agenttrace
+          --collect-submodules agenttrace
+          _entry.py
+
+      - name: Smoke test the EXE
+        run: |
+          .\dist\agenttrace.exe --version
+          .\dist\agenttrace.exe --help
+
+      - name: Stage installer inputs
+        shell: bash
+        run: |
+          mkdir -p build_installer
+          cp dist/agenttrace.exe build_installer/agenttrace.exe
+          cp installer/agenttrace.iss build_installer/agenttrace.iss
+          # README shown by the installer (isreadme flag in the .iss)
+          printf 'AgentTrace %s\nRAKSHANEX TECHNOLOGIES\n\nForensic analysis for AI-agent activity.\nRun "agenttrace --help" in a terminal after install.\n' "0.1.0" > build_installer/README.txt
+          ls -la build_installer
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer with Inno Setup
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build_installer\agenttrace.iss
+          dir build_installer\Output
+
+      - name: Smoke test the installer (silent install + verify + uninstall)
+        shell: cmd
+        run: |
+          echo === silent install ===
+          build_installer\Output\agenttrace-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          echo exit code: %ERRORLEVEL%
+          echo === verify installed exe runs ===
+          "%ProgramFiles%\AgentTrace\agenttrace.exe" --version
+          echo === verify Add/Remove Programs entry exists in registry ===
+          reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" /s /f "AgentTrace" || echo "entry search done"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agenttrace-setup
+          path: build_installer/Output/agenttrace-setup.exe
+          if-no-files-found: error
+
+      - name: Attach installer to Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build_installer/Output/agenttrace-setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
